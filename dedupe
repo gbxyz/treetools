@@ -1,0 +1,187 @@
+#!/usr/bin/perl
+#
+# Copyright 2017 Gavin Brown <gavin.brown@uk.com>
+#
+# Simple script to find and remove duplicate files within a directory
+# tree
+#
+#
+use Cwd qw(getcwd abs_path);
+use Digest::SHA;
+use Fcntl qw(:DEFAULT);
+use File::Basename qw(dirname);
+use File::Copy;
+use File::Path qw(make_path);
+use Getopt::Long;
+use IO::Dir;
+use IO::File;
+use strict;
+
+my $backup;		# location where backups should be put
+my $delete;		# whether to delete duplicates
+my $report;		# report rather than backup/delete (default behaviour)
+my $exclude;		# exclude files matching this regexp
+my $match;		# include files matching this regexp
+my $keep = 'oldest';	# which file to keep
+
+GetOptions(
+	'backup=s'	=> \$backup,
+	'delete'	=> \$delete,
+	'exclude=s'	=> \$exclude,
+	'match=s'	=> \$match,
+	'keep=s'	=> \$keep,
+);
+
+if ($backup && $delete) {
+	print STDERR "Cannot use both --backup and --delete arguments\n";
+	exit(1);
+
+} elsif ($keep !~ /^(oldest|newest|highest)$/) {
+	print STDERR "Invalid value for --keep argument\n";
+	exit(1);
+
+} elsif (!$backup && !$delete) {
+	$report = 1;
+
+} elsif ($backup) {
+	if (!-d $backup && !make_path($backup)) {
+		print STDERR "Backup directory '$backup' does not exist and could not be created\n";
+		exit(1);
+	}
+}
+
+print "Scanning for files...\n";
+my @paths;
+search(abs_path($ARGV[0] || getcwd()));
+printf("Found %s files\n", scalar(@paths));
+
+print "Finding duplicates...\n";
+my $hashes = {};
+foreach my $path (@paths) {
+	push(@{$hashes->{hashfile($path)}}, $path);
+	printf("Found %u unique hashes\n", scalar(keys(%{$hashes})), scalar(@paths)) if (0 == scalar(keys(%{$hashes})) % 1000);
+}
+printf("Found %u unique hashes\n", scalar(keys(%{$hashes})));
+
+print "Processing duplicates...\n";
+my $space = 0;
+my $count = 0;
+foreach my $hash (keys(%{$hashes})) {
+	next if (scalar(@{$hashes->{$hash}}) < 2);
+
+	my @dupes = sort { filecmp($a, $b) } @{$hashes->{$hash}};
+	my $keep = shift(@dupes);
+
+	printf(
+		"File %s (%s) has %d duplicate(s):\n",
+		$keep,
+		$hash,
+		scalar(@dupes),
+	) if ($report);
+
+	$count += scalar(@dupes);
+	$space += scalar(@dupes) * (stat($keep))[7];
+
+	foreach my $dupe (@dupes) {
+		printf("     %s\n", $dupe) if ($report);
+
+		if ($delete) {
+			if (!unlink($dupe)) {
+				chomp($!);
+				printf(STDERR "Cannot remove %s: %s\n", $dupe, $!);
+				exit(1);
+
+			} else {
+				printf("Removed %s\n", $dupe);
+
+			}
+
+		} elsif ($backup) {
+			my $bak = sprintf('%s/%s', $backup, $dupe);
+			make_path(dirname($bak));
+			if (!move($dupe, $bak)) {
+				chomp($!);
+				printf(STDERR "Cannot rename %s to %s: %s\n", $dupe, $bak, $!);
+				exit(1);
+
+			} else {
+				printf("%s => %s\n", $dupe, $bak);
+
+			}
+		}
+	}
+	print "\n" if ($report);
+}
+
+printf(
+	"Found %u duplicates of %u unique files, representing %u MiB on disk\n",
+	$count,
+	scalar(keys(%{$hashes})),
+	$space/(1024 * 1024)
+) if ($report);
+
+#
+# scan a directory and put all files found into @paths
+#
+sub search {
+	my $dir = shift;
+	my $d = IO::Dir->new($dir);
+	while (my $f = $d->read) {
+		next if ($f =~ /^\./);
+		my $path = $dir.'/'.$f;
+		if (-d $path) {
+			search($path);
+
+		} else {
+			my $push = 1;
+			if ($match) {
+				if ($path =~ /$match/i) {
+					$push = 1;
+
+				} else {
+					$push = undef;
+
+				}
+			}
+			if ($exclude) {
+				if ($path =~ /$exclude/i) {
+					$push = undef;
+
+				} else {
+					$push = 1;
+
+				}
+			}
+			push(@paths, $path) if ($push);
+			printf("Found %u files\n", scalar(@paths)) if (0 == scalar(@paths) % 5000);
+
+		}
+	}
+}
+
+#
+# compare two files
+#
+sub filecmp {
+	my ($a, $b) = @_;
+
+	if ('oldest' eq $keep) {
+		return (stat($a))[9] <=> (stat($a))[9];
+
+	} elsif ('newest' eq $keep) {
+		return (stat($b))[9] <=> (stat($a))[9];
+
+	} elsif ('higest' eq $keep) {
+		return scalar(split(/\//, $b)) <=> scalar(split(/\//, $a));
+
+	}
+}
+
+#
+# generate SHA1 digest of a file
+#
+sub hashfile {
+	my $hash = Digest::SHA->new;
+	$hash->addfile(shift);
+	return $hash->hexdigest;
+}

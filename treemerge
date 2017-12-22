@@ -1,0 +1,123 @@
+#!/usr/bin/perl
+#
+# Copyright 2017 Gavin Brown <gavin.brown@uk.com>
+#
+# Simple script to losslessly merge two directory trees
+# if a file exists in the same location in both trees, the
+# file in the "from" tree will not be removed unless the "to"
+# file is identical. After this script runs, the "from" tree
+# will only contain files that could not be safely moved to the
+# "to" tree
+#
+use Digest::SHA;
+use Cwd qw(abs_path);
+use File::Basename qw(dirname);
+use File::Copy;
+use File::Path qw(make_path);
+use File::Slurp;
+use IO::Dir;
+use strict;
+
+# Usage: treemerge FROM_DIR TO_DIR
+my ($from, $to) = map { abs_path($_) } @ARGV;
+
+# scan() is a recursive function
+scan($from);
+
+sub scan {
+	my $dir = shift;
+	die('%s: not a directory') unless (-e $dir && -d $dir);
+
+	my $d = IO::Dir->new($dir);
+	while (my $f = $d->read) {
+
+		next if ($f =~ /^\.{1,2}$/);
+
+		my $path = $dir.'/'.$f;
+
+		if (-d $path) {
+			# recurse
+			scan($path);
+
+		} else {
+			# compute destination path
+			my $dst = $path;
+			$dst =~ s/^$from\///;
+
+			$dst = $to.'/'.$dst;
+
+			if (-e $dst) {
+				# a file already exists at the destination
+
+				my $same;
+				if (filesize($path) == filesize($dst)) {
+					# file sizes are identical
+					if (filesize($path) > 1000000) {
+						# big file so hash
+						$same = (hashfile($path) eq hashfile($dst));
+
+					} else {
+						# small file so directly compare the two blobs
+						$same = (read_file($path) eq read_file($dst));
+
+					}
+				}
+
+				if ($same) {
+					# source and destination files are identical, we can safely
+					# remove the source file
+					if (!unlink($path)) {
+						printf(STDERR "Unable to delete %s: %s\n", $path, $!);
+						exit(1);
+
+					} else {
+						printf("Removed %s\n", $path);
+
+					}
+
+				} else {
+					# files differ, so just report the fact
+					printf(STDERR "%s differs from %s\n", $path, $dst);
+
+				}
+
+			} else {
+				# file does not exist
+
+				my $dir = dirname($dst);
+				if (!-e $dir && !make_path($dir)) {
+					printf(STDERR "Unable to create %s: %s\n", $dir, $!);
+					exit(1);
+
+				} elsif (!-d $dir) {
+					printf(STDERR "%s is not a directory\n", $dir);
+					exit(1);
+
+				} elsif (!move($path, $dst)) {
+					printf(STDERR "Unable to move %s to %s: %s\n", $path, $dst, $!);
+					exit(1);
+
+				} else {
+					printf("%s => %s\n", $path, $dst);
+
+				}
+			}
+		}
+	}
+
+	# remove directory if it's empty
+	printf("Removed %s\n", $dir) if rmdir($dir);
+}
+
+#
+# generate SHA1 digest of a file
+#
+sub hashfile {
+	my $hash = Digest::SHA->new;
+	$hash->addfile(shift);
+	return $hash->hexdigest;
+}
+
+sub filesize {
+	return (stat(shift))[7];
+}
