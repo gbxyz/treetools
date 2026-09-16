@@ -1,10 +1,9 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 #
-# Copyright 2017 Gavin Brown <gavin.brown@uk.com>
+# Copyright 2017-2026 Gavin Brown <gavin.brown@fastmail.uk>
 #
 # Simple script to find and remove duplicate files within a directory
 # tree
-#
 #
 use Cwd qw(getcwd abs_path);
 use Digest::SHA;
@@ -12,21 +11,24 @@ use Fcntl qw(:DEFAULT);
 use File::Basename qw(dirname);
 use File::Copy;
 use File::Path qw(make_path);
+use File::Spec;
 use Getopt::Long;
 use IO::Dir;
 use IO::File;
-use strict;
+use common::sense;
 
-my $backup;		# location where backups should be put
-my $delete;		# whether to delete duplicates
-my $report;		# report rather than backup/delete (default behaviour)
-my $exclude;		# exclude files matching this regexp
-my $match;		# include files matching this regexp
+my $backup;		        # location where backups should be put
+my $delete;		        # whether to delete duplicates
+my $symlink;		    # whether to symlink duplicates
+my $report;		        # report rather than backup/delete (default behaviour)
+my $exclude;	        # exclude files matching this regexp
+my $match;		        # include files matching this regexp
 my $keep = 'oldest';	# which file to keep
 
 GetOptions(
 	'backup=s'	=> \$backup,
 	'delete'	=> \$delete,
+    'symlink'   => \$symlink,
 	'exclude=s'	=> \$exclude,
 	'match=s'	=> \$match,
 	'keep=s'	=> \$keep,
@@ -36,11 +38,17 @@ if ($backup && $delete) {
 	print STDERR "Cannot use both --backup and --delete arguments\n";
 	exit(1);
 
+} elsif ($delete && $symlink) {
+	print STDERR "Cannot use both --delete and --symlink arguments\n";
+
+} elsif ($backup && $symlink) {
+	print STDERR "Cannot use both --backup and --symlink arguments\n";
+
 } elsif ($keep !~ /^(oldest|newest|highest)$/) {
 	print STDERR "Invalid value for --keep argument\n";
 	exit(1);
 
-} elsif (!$backup && !$delete) {
+} elsif (!$backup && !$delete && !$symlink) {
 	$report = 1;
 
 } elsif ($backup) {
@@ -50,9 +58,11 @@ if ($backup && $delete) {
 	}
 }
 
+my $subject_dir = abs_path($ARGV[0] || getcwd());
+
 print "Scanning for files...\n";
 my @paths;
-search(abs_path($ARGV[0] || getcwd()));
+search($subject_dir);
 printf("Found %s files\n", scalar(@paths));
 
 print "Finding duplicates...\n";
@@ -85,7 +95,22 @@ foreach my $hash (keys(%{$hashes})) {
 	foreach my $dupe (@dupes) {
 		printf("     %s\n", $dupe) if ($report);
 
-		if ($delete) {
+        if ($symlink) {
+            if (!unlink($dupe)) {
+                chomp($!);
+                printf(STDERR "Cannot remove %s: %s\n", $dupe, $!);
+                exit(1);
+
+            } elsif (!symlink(File::Spec->abs2rel($keep, $subject_dir), $dupe)) {
+                printf(STDERR "Could not create symbolic link from %s to %s!\n", $dupe, $keep);
+                exit(1);
+
+            } else {
+                printf("Replaced %s with symbolic link to %s\n", $dupe, $keep);
+
+            }
+
+        } elsif ($delete) {
 			if (!unlink($dupe)) {
 				chomp($!);
 				printf(STDERR "Cannot remove %s: %s\n", $dupe, $!);
