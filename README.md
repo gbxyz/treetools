@@ -7,12 +7,13 @@
 ### Usage
 
 ```
-dedupe OPTIONS
+dedupe OPTIONS [DIR [DIR [...]]]
 ```
+
+If `DIR` is not specified, the current working directory will be scanned.
 
 #### Options
 
-* `--report` -- report rather than backup/delete (default behaviour)
 * `--backup=DST` - location where backups should be put
 * `--delete` - whether to delete duplicates
 * `--symlink` - whether to symlink duplicates
@@ -20,7 +21,7 @@ dedupe OPTIONS
 * `--match=PATTERN` - include files matching this regexp
 * `--keep=(oldest|newest|highest)` - keep the oldest, newest or highest (in the tree) file.
 
-Only one of `--backup`, `--delete`, `--symlink` or `--report` can be used.
+If none of `--backup`, `--delete` or `--symlink` are provided, `dedupe` will print a report of what it finds. These options cannot be combined.
 
 ## 2. treemerge
 
